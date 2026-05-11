@@ -1,10 +1,17 @@
 {
-  "author": "Your Name",
+  "author": ["Fr4gm3nt3d.sh"],
   "description": "A cog for sending custom preconfigured embed messages to Discord channels and threads.",
+  "disabled": false,
+  "end_user_data_statement": "This cog does not persistently store any data or metadata about users.",
+  "hidden": false,
   "install_msg": "Thanks for installing EmbedSender! Use `[p]embed` to get started.",
-  "name": "embed",
+  "max_bot_version": "0.0.0",
+  "min_bot_version": "3.1.8",
+  "name": "EmbedSender",
+  "permissions": [],
+  "required_cogs": {},
+  "requirements": [],
   "short": "Send custom embed messages",
   "tags": ["embed", "messages", "utility"],
-  "type": "COG",
-  "version": "1.0.0"
+  "type": "COG"
 }
