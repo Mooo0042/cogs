@@ -1,0 +1,10 @@
+{
+  "author": "Your Name",
+  "description": "A cog for sending custom preconfigured embed messages to Discord channels and threads.",
+  "install_msg": "Thanks for installing EmbedSender! Use `[p]embed` to get started.",
+  "name": "EmbedSender",
+  "short": "Send custom embed messages",
+  "tags": ["embed", "messages", "utility"],
+  "type": "COG",
+  "version": "1.0.0"
+}
