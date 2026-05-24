@@ -1,3 +1,4 @@
+import logging
 import os
 import re
 import aiohttp
@@ -6,6 +7,8 @@ from datetime import datetime
 import discord
 from redbot.core import commands as red_commands
 from redbot.core.bot import Red
+
+log = logging.getLogger("red.logwatcher")
 
 FORUM_CHANNEL_ID = 1376287715603124324
 MCLO_GS_PATTERN = re.compile(r"https?://mclo\.gs/\S+")
@@ -19,78 +22,71 @@ class LogWatcher(red_commands.Cog):
 
     def __init__(self, bot: Red):
         self.bot = bot
-        self._nc_user: str | None = None
-        self._nc_token: str | None = None
 
     def _get_nc_credentials(self) -> tuple[str, str]:
-        """Lazily load Nextcloud credentials from environment variables."""
-        if self._nc_user is None:
-            self._nc_user = os.environ.get("NEXTCLOUD_USER", "")
-        if self._nc_token is None:
-            self._nc_token = os.environ.get("NEXTCLOUD_TOKEN", "")
-        if not self._nc_user or not self._nc_token:
-            raise RuntimeError(
-                "NEXTCLOUD_USER and NEXTCLOUD_TOKEN environment variables must be set."
-            )
-        return self._nc_user, self._nc_token
+        user = os.environ.get("NEXTCLOUD_USER", "")
+        token = os.environ.get("NEXTCLOUD_TOKEN", "")
+        if not user or not token:
+            raise RuntimeError("NEXTCLOUD_USER and NEXTCLOUD_TOKEN environment variables must be set.")
+        return user, token
 
     async def _create_file_request_share(self, folder_name: str) -> str | None:
-        """
-        Creates a folder inside NEXTCLOUD_SHARE_PATH and a File Request share for it.
-        Returns the share URL or None on failure.
-        """
         nc_user, nc_token = self._get_nc_credentials()
         auth = aiohttp.BasicAuth(nc_user, nc_token)
         headers = {"OCS-APIRequest": "true", "Accept": "application/json"}
-
         folder_path = f"{NEXTCLOUD_SHARE_PATH}/{folder_name}"
 
         async with aiohttp.ClientSession(auth=auth, headers=headers) as session:
             # 1. Create the folder via WebDAV
-            webdav_url = (
-                f"{NEXTCLOUD_URL}/remote.php/dav/files/{nc_user}{folder_path}"
-            )
+            webdav_url = f"{NEXTCLOUD_URL}/remote.php/dav/files/{nc_user}{folder_path}"
+            log.debug("WebDAV MKCOL: %s", webdav_url)
             async with session.request("MKCOL", webdav_url) as resp:
-                # 405 means it already exists, which is fine
+                log.debug("WebDAV MKCOL status: %d body: %s", resp.status, await resp.text())
                 if resp.status not in (201, 405):
+                    log.error("WebDAV folder creation failed with status %d", resp.status)
                     return None
 
-            # 2. Create a File Request share (share type 4) on that folder
-            share_url = f"{NEXTCLOUD_URL}/ocs/v2.php/apps/files_sharing/api/v1/shares"
+            # 2. Create File Request share (share type 4)
+            share_api_url = f"{NEXTCLOUD_URL}/ocs/v2.php/apps/files_sharing/api/v1/shares"
             payload = {
                 "path": folder_path,
-                "shareType": 4,  # File Request / Upload-only link
-                "permissions": 4,  # create/upload only
+                "shareType": 4,
+                "permissions": 4,
             }
-            async with session.post(share_url, data=payload) as resp:
+            log.debug("Creating share for path: %s", folder_path)
+            async with session.post(share_api_url, data=payload) as resp:
+                body = await resp.text()
+                log.debug("Share API status: %d body: %s", resp.status, body)
                 if resp.status in (200, 201):
-                    data = await resp.json()
                     try:
-                        return data["ocs"]["data"]["url"]
-                    except (KeyError, TypeError):
+                        import json
+                        data = json.loads(body)
+                        url = data["ocs"]["data"]["url"]
+                        log.debug("Share URL: %s", url)
+                        return url
+                    except (KeyError, TypeError, ValueError) as e:
+                        log.error("Failed to parse share response: %s | body: %s", e, body)
                         return None
+                log.error("Share creation failed with status %d body: %s", resp.status, body)
                 return None
 
     @red_commands.Cog.listener()
     async def on_thread_create(self, thread: discord.Thread):
-        """Fires when a new thread (forum post) is created."""
-        # Only watch the configured forum channel
         if thread.parent_id != FORUM_CHANNEL_ID:
             return
 
-        # Fetch the starter message (first post body)
+        log.debug("New thread detected: %s (id=%d)", thread.name, thread.id)
+
         try:
             starter_message = await thread.fetch_message(thread.id)
         except (discord.NotFound, discord.HTTPException):
-            # If we can't fetch it, try the first message in history
             try:
                 starter_message = await thread.history(limit=1, oldest_first=True).next()
             except (discord.NoMoreItems, discord.HTTPException):
+                log.error("Could not fetch starter message for thread %d", thread.id)
                 return
 
         content = starter_message.content or ""
-
-        # Also check embeds and attachments for mclo.gs links
         for embed in starter_message.embeds:
             if embed.url:
                 content += f" {embed.url}"
@@ -98,26 +94,36 @@ class LogWatcher(red_commands.Cog):
                 content += f" {embed.description}"
 
         if MCLO_GS_PATTERN.search(content):
-            # Link found, nothing to do
+            log.debug("mclo.gs link found, skipping.")
             return
 
-        # No mclo.gs link found — build the Nextcloud File Request folder name
-        post_creator = thread.owner or await self.bot.fetch_user(thread.owner_id)
-        username = post_creator.display_name if hasattr(post_creator, "display_name") else str(post_creator)
-        # Sanitise the folder name so it's safe for Nextcloud
+        log.debug("No mclo.gs link found, building Nextcloud share...")
+
+        post_creator = thread.owner
+        if post_creator is None:
+            try:
+                post_creator = await self.bot.fetch_user(thread.owner_id)
+            except discord.HTTPException:
+                post_creator = None
+
+        username = (
+            post_creator.display_name
+            if post_creator and hasattr(post_creator, "display_name")
+            else str(thread.owner_id)
+        )
         safe_username = re.sub(r"[^\w\-]", "_", username)
         date_str = datetime.now().strftime("%Y-%m-%d")
         folder_name = f"{safe_username}_{date_str}"
+        log.debug("Folder name: %s", folder_name)
 
         share_link = None
         try:
             share_link = await self._create_file_request_share(folder_name)
         except RuntimeError as e:
-            # Credentials not configured — log and continue without the link
-            import logging
-            logging.getLogger("red.logwatcher").error(str(e))
+            log.error(str(e))
 
-        # Build the reply message
+        log.debug("Share link result: %s", share_link)
+
         if share_link:
             upload_line = (
                 f"If mclo.gs says your file is too big or has too many characters, "
