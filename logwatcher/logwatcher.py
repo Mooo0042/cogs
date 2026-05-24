@@ -129,22 +129,22 @@ class LogWatcher(red_commands.Cog):
 
         if share_link:
             upload_line = (
-                f"If mclo.gs says your file is too big or has too many characters, "
-                f"you can upload it directly here instead: {share_link}"
+                f"if mclo.gs says your file is too big or has too many characters, "
+                f"you can upload it directly here instead~ <{share_link}>"
             )
         else:
             upload_line = (
-                "If mclo.gs says your file is too big or has too many characters, "
-                "please attach the log file directly to a reply in this thread."
+                "if mclo.gs says your file is too big or has too many characters, "
+                "just attach the log file directly to a reply here! ^^"
             )
 
         message = (
-            "👋 Hello! I'm **Saucy**, the Mod-Sauce Discord bot.\n\n"
-            "I wasn't able to find a link to your logs ([mclo.gs](https://mclo.gs)) "
-            "in your post. Please upload your logs there and paste the link here.\n\n"
+            "hewwo!! (^w^) i'm **Saucy**, the Mod-Sauce Discord bot~\n\n"
+            "i couldn't find a link to your logs in your post! :3\n"
+            "pwease upload them to <https://mclo.gs> and paste the link here,\n"
             f"{upload_line}\n\n"
-            "If you don't know how to find or upload your logs, type `/logs` and "
-            "I'll walk you through it! 🪵"
+            "if you don't know how to find or upload your logs, type `/logs` and "
+            "i'll walk you through it!! uwu"
         )
 
-        await thread.send(message)
+        await thread.send(message, suppress_embeds=True)
