@@ -23,51 +23,60 @@ class LogWatcher(red_commands.Cog):
     def __init__(self, bot: Red):
         self.bot = bot
 
-    def _get_nc_credentials(self) -> tuple[str, str]:
-        user = os.environ.get("NEXTCLOUD_USER", "")
+    def _get_nc_credentials(self) -> tuple[str, str, str]:
+        """
+        Returns (login, token, dav_username).
+        - login:        email/username used for HTTP Basic Auth (NEXTCLOUD_LOGIN)
+        - token:        app password (NEXTCLOUD_TOKEN)
+        - dav_username: internal NC username used in the WebDAV path (NEXTCLOUD_USER)
+        """
+        login = os.environ.get("NEXTCLOUD_LOGIN", "")
         token = os.environ.get("NEXTCLOUD_TOKEN", "")
-        if not user or not token:
-            raise RuntimeError("NEXTCLOUD_USER and NEXTCLOUD_TOKEN environment variables must be set.")
-        return user, token
+        dav_user = os.environ.get("NEXTCLOUD_USER", "")
+        if not login or not token or not dav_user:
+            raise RuntimeError(
+                "NEXTCLOUD_LOGIN, NEXTCLOUD_USER, and NEXTCLOUD_TOKEN "
+                "environment variables must all be set."
+            )
+        return login, token, dav_user
 
-    async def _create_file_request_share(self, folder_name: str) -> str | None:
-        nc_user, nc_token = self._get_nc_credentials()
-        auth = aiohttp.BasicAuth(nc_user, nc_token)
+    async def _create_upload_share(self, folder_name: str) -> str | None:
+        """
+        Creates a folder inside NEXTCLOUD_SHARE_PATH and returns a
+        public upload-only share link (share type 3, permissions 4).
+        """
+        login, token, dav_user = self._get_nc_credentials()
+        auth = aiohttp.BasicAuth(login, token)
         headers = {"OCS-APIRequest": "true", "Accept": "application/json"}
         folder_path = f"{NEXTCLOUD_SHARE_PATH}/{folder_name}"
 
         async with aiohttp.ClientSession(auth=auth, headers=headers) as session:
-            # 1. Create the folder via WebDAV
-            webdav_url = f"{NEXTCLOUD_URL}/remote.php/dav/files/{nc_user}{folder_path}"
-            log.debug("WebDAV MKCOL: %s", webdav_url)
+            # 1. Create the folder via WebDAV (uses internal username in path)
+            webdav_url = f"{NEXTCLOUD_URL}/remote.php/dav/files/{dav_user}{folder_path}"
             async with session.request("MKCOL", webdav_url) as resp:
-                log.debug("WebDAV MKCOL status: %d body: %s", resp.status, await resp.text())
+                # 201 = created, 405 = already exists — both are fine
                 if resp.status not in (201, 405):
-                    log.error("WebDAV folder creation failed with status %d", resp.status)
+                    log.error("WebDAV MKCOL failed: HTTP %d", resp.status)
                     return None
 
-            # 2. Create File Request share (share type 4)
+            # 2. Create a public upload-only share link (type 3, permissions 4)
             share_api_url = f"{NEXTCLOUD_URL}/ocs/v2.php/apps/files_sharing/api/v1/shares"
             payload = {
                 "path": folder_path,
-                "shareType": 4,
-                "permissions": 4,
+                "shareType": 3,   # public link
+                "permissions": 4, # create/upload only
             }
-            log.debug("Creating share for path: %s", folder_path)
             async with session.post(share_api_url, data=payload) as resp:
                 body = await resp.text()
-                log.debug("Share API status: %d body: %s", resp.status, body)
                 if resp.status in (200, 201):
                     try:
                         import json
                         data = json.loads(body)
-                        url = data["ocs"]["data"]["url"]
-                        log.debug("Share URL: %s", url)
-                        return url
+                        return data["ocs"]["data"]["url"]
                     except (KeyError, TypeError, ValueError) as e:
                         log.error("Failed to parse share response: %s | body: %s", e, body)
                         return None
-                log.error("Share creation failed with status %d body: %s", resp.status, body)
+                log.error("Share API failed: HTTP %d | body: %s", resp.status, body)
                 return None
 
     @red_commands.Cog.listener()
@@ -75,8 +84,7 @@ class LogWatcher(red_commands.Cog):
         if thread.parent_id != FORUM_CHANNEL_ID:
             return
 
-        log.debug("New thread detected: %s (id=%d)", thread.name, thread.id)
-
+        # Fetch the starter message
         try:
             starter_message = await thread.fetch_message(thread.id)
         except (discord.NotFound, discord.HTTPException):
@@ -94,17 +102,15 @@ class LogWatcher(red_commands.Cog):
                 content += f" {embed.description}"
 
         if MCLO_GS_PATTERN.search(content):
-            log.debug("mclo.gs link found, skipping.")
             return
 
-        log.debug("No mclo.gs link found, building Nextcloud share...")
-
+        # Resolve the post author's display name for the folder name
         post_creator = thread.owner
         if post_creator is None:
             try:
                 post_creator = await self.bot.fetch_user(thread.owner_id)
             except discord.HTTPException:
-                post_creator = None
+                pass
 
         username = (
             post_creator.display_name
@@ -114,15 +120,12 @@ class LogWatcher(red_commands.Cog):
         safe_username = re.sub(r"[^\w\-]", "_", username)
         date_str = datetime.now().strftime("%Y-%m-%d")
         folder_name = f"{safe_username}_{date_str}"
-        log.debug("Folder name: %s", folder_name)
 
         share_link = None
         try:
-            share_link = await self._create_file_request_share(folder_name)
+            share_link = await self._create_upload_share(folder_name)
         except RuntimeError as e:
             log.error(str(e))
-
-        log.debug("Share link result: %s", share_link)
 
         if share_link:
             upload_line = (
