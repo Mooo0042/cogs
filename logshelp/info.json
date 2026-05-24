@@ -1,0 +1,17 @@
+{
+  "author": ["Fr4gm3nt3d.sh"],
+  "description": "Provides a /logs slash command with interactive buttons guiding users to upload their Minecraft logs to mclo.gs.",
+  "disabled": false,
+  "end_user_data_statement": "This cog does not persistently store any data or metadata about users.",
+  "hidden": false,
+  "install_msg": "Thanks for installing LogsHelp! The /logs slash command is now available. Make sure to sync your slash commands with `[p]slash sync` if needed.",
+  "max_bot_version": "0.0.0",
+  "min_bot_version": "3.1.8",
+  "name": "LogsHelp",
+  "permissions": ["send_messages"],
+  "required_cogs": {},
+  "requirements": [],
+  "short": "Interactive /logs help command for Minecraft players",
+  "tags": ["logs", "minecraft", "help", "utility"],
+  "type": "COG"
+}
